@@ -1,0 +1,16 @@
+# Ambiente virtual
+.venv/
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+
+# Configurações locais do Streamlit (incluindo secrets)
+.streamlit/secrets.toml
+
+# Arquivos de log
+*.log
+
+# Dados temporários
+*.sqlite3
+.DS_Store
