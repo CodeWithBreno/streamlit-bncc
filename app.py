@@ -3,188 +3,191 @@ import pandas as pd
 import altair as alt
 from supabase import create_client, Client
 from datetime import date
+from httpx import ConnectTimeout
 
-# ─── 1. Conexão Supabase via secrets ───────────────────────────────────────────
+# ─── 1. Conexão Supabase ──────────────────────────────────────────────────────
 url: str = st.secrets["supabase"]["url"]
 key: str = st.secrets["supabase"]["key"]
-supabase: Client = create_client(url, key)
+try:
+    supabase: Client = create_client(url, key)
+except Exception as e:
+    st.error(f"❌ Não foi possível conectar ao Supabase:\n{e}")
+    st.stop()
 
-st.set_page_config(page_title="Relatório BNCC", layout="wide")
-st.title("📊 Relatório de Desempenho BNCC")
+st.set_page_config(page_title="Relatório BNCC (Construtor)", layout="wide")
+st.title("📊 Relatório de Desempenho BNCC (por Construtor)")
 
-# ─── Botão para limpar cache (recarregar dados) ────────────────────────────────
+# ─── 2. Botão para limpar cache ───────────────────────────────────────────────
 if st.button("🔄 Recarregar dados"):
     st.cache_data.clear()
 
-# ─── 2. Formulário de inserção ─────────────────────────────────────────────────
-with st.form("form_insercao", clear_on_submit=True):
-    st.subheader("➕ Novo registro")
-    escola     = st.text_input("Escola")
-    serie      = st.selectbox("Série", [f"{i}º ano" for i in range(1,10)])
-    disciplina = st.selectbox("Disciplina", ["Português", "Matemática"])
-    data       = st.date_input("Data", value=date.today())
-    habilidade = st.text_input("Habilidade BNCC")
-    resultado  = st.slider("Resultado (%)", 0, 100, 75)
-    submitted  = st.form_submit_button("Adicionar")
-    if submitted:
-        supabase.table("relatorios_bncc").insert({
-            "escola": escola,
-            "serie": serie,
-            "disciplina": disciplina,
-            "data": data.isoformat(),
-            "habilidade": habilidade,
-            "resultado": resultado
-        }).execute()
-        st.success("✅ Registro adicionado!")
-        st.cache_data.clear()
+# ─── 3. Carregar listas ──────────────────────────────────────────────────────
+@st.cache_data
+def load_list(table: str, column: str):
+    try:
+        res = supabase.table(table).select(column).order(column).execute()
+        return [r[column] for r in res.data] if res.data else []
+    except ConnectTimeout:
+        st.error(f"❌ Timeout ao buscar dados de `{table}`.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar `{table}`: {e}")
+        st.stop()
 
-# ─── 3. Carregar dados ─────────────────────────────────────────────────────────
+escolas     = load_list("escolas", "nome")
+construtores= load_list("construtores", "nome")
+
+# ─── 4. Carregar dados ────────────────────────────────────────────────────────
 @st.cache_data
 def carregar_dados():
-    res = supabase.table("relatorios_bncc") \
-                  .select("*") \
-                  .order("data", desc=False) \
-                  .execute()
+    try:
+        res = supabase.table("relatorios_bncc").select("*").order("data", desc=False).execute()
+    except ConnectTimeout:
+        st.error("❌ Timeout ao buscar registros em `relatorios_bncc`.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar `relatorios_bncc`: {e}")
+        st.stop()
+
     raw = res.data or []
-    cols = ["id","escola","serie","disciplina","data","habilidade","resultado"]
-    if not raw:
-        return pd.DataFrame(columns=cols)
+    expected = ["id","escola","serie","disciplina","data","resultado","construtor"]
     df = pd.DataFrame(raw)
-    # normaliza coluna data
-    date_col = next((c for c in df.columns if c.lower()=="data"), None)
-    if date_col:
-        df[date_col] = pd.to_datetime(df[date_col])
-        if date_col!="data":
-            df = df.rename(columns={date_col:"data"})
+    for col in expected:
+        if col not in df.columns:
+            df[col] = None
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
     return df
 
 df = carregar_dados()
-if df.empty:
-    st.info("Nenhum dado cadastrado ainda.")
+
+# ─── 5. Buffer de lançamentos ─────────────────────────────────────────────────
+if "entries" not in st.session_state:
+    st.session_state.entries = []
+
+st.subheader("➕ Novo(s) registro(s) de resultado por Construtor")
+escola     = st.selectbox("Escola", escolas)
+serie      = st.selectbox("Série", [f"{i}º ano" for i in range(1,10)])
+disciplina = st.selectbox("Disciplina", ["Português", "Matemática"])
+data       = st.date_input("Data", value=date.today())
+
+col1, col2, col3 = st.columns([3,3,1])
+with col1:
+    new_con = st.selectbox("Construtor", construtores, key="new_con")
+with col2:
+    new_res = st.slider("Resultado (%)", 0, 100, 75, key="new_res")
+with col3:
+    if st.button("➕", help="Adicionar construtor ao buffer"):
+        st.session_state.entries.append({"construtor": new_con, "resultado": new_res})
+
+if st.session_state.entries:
+    st.markdown("**Buffer de lançamentos:**")
+    for idx, row in enumerate(st.session_state.entries):
+        c1, c2 = st.columns([8,1])
+        c1.write(f"- **{row['construtor']}** → {row['resultado']}%")
+        if c2.button("❌", key=f"rem_{idx}"):
+            st.session_state.entries.pop(idx)
+            break
+
+if st.session_state.entries and st.button("✅ Cadastrar registros"):
+    errors = []
+    for row in st.session_state.entries:
+        try:
+            supabase.table("relatorios_bncc").insert({
+                "escola": escola,
+                "serie": serie,
+                "disciplina": disciplina,
+                "data": data.isoformat(),
+                "resultado": row["resultado"],
+                "construtor": row["construtor"]
+            }).execute()
+        except Exception as e:
+            errors.append(f"{row['construtor']}: {e}")
+    if errors:
+        st.error("Alguns lançamentos falharam:\n" + "\n".join(errors))
+    else:
+        st.success(f"✅ {len(st.session_state.entries)} registros adicionados!")
+    st.session_state.entries = []
+    st.cache_data.clear()
+
+# ─── 6. Sem dados ────────────────────────────────────────────────────────────
+if df.dropna(how="all", subset=["escola","construtor","resultado"]).empty:
+    st.info("Nenhum dado cadastrado. Use o formulário acima.")
     st.stop()
 
-# ─── 4. Filtro de intervalo de datas ───────────────────────────────────────────
-st.sidebar.subheader("🔎 Período de análise")
+# ─── 7. Filtro de período e escola ────────────────────────────────────────────
+st.sidebar.subheader("🔎 Filtros")
+# Novo filtro por escola na sidebar
+f_esc = st.sidebar.selectbox("Filtrar por Escola", ["Todas"] + escolas)
+st.sidebar.markdown("---")
 min_date, max_date = df["data"].min().date(), df["data"].max().date()
 start_date = st.sidebar.date_input("Data Inicial", value=min_date, min_value=min_date, max_value=max_date)
 end_date   = st.sidebar.date_input("Data Final",   value=max_date, min_value=min_date, max_value=max_date)
+
+# Validação e aplicação dos filtros
 if start_date > end_date:
     st.sidebar.error("Data Inicial deve ser ≤ Data Final")
     st.stop()
+
 df = df[(df["data"] >= pd.to_datetime(start_date)) & (df["data"] <= pd.to_datetime(end_date))]
+if f_esc != "Todas":
+    df = df[df["escola"] == f_esc]
 
-# ─── 5. Cálculo de tendência ──────────────────────────────────────────────────
-grp = df.groupby(["escola","serie","disciplina","habilidade"])
-first = grp.first().reset_index()[["escola","serie","disciplina","habilidade","resultado"]]
-last  = grp.last().reset_index()[["escola","serie","disciplina","habilidade","resultado"]]
-tend  = pd.merge(first, last,
-                 on=["escola","serie","disciplina","habilidade"],
-                 suffixes=("_primeiro","_ultimo"))
-tend["variacao_%"] = ((tend["resultado_ultimo"] - tend["resultado_primeiro"])
-                     / tend["resultado_primeiro"] * 100).round(2)
+# ─── 8. KPIs ──────────────────────────────────────────────────────────────────
+c1, c2, c3 = st.columns(3)
+c1.metric("🔢 Total lançamentos", len(df))
+c2.metric("📈 Média Geral", f"{round(df['resultado'].mean(),2)}%")
 
-# ─── 6. KPI Cards ─────────────────────────────────────────────────────────────
-col_a, col_b, col_c = st.columns(3)
-with col_a:
-    st.metric("🔢 Total Registros", len(df))
-with col_b:
-    avg_perf = round(df["resultado"].mean(),2)
-    st.metric("📈 Média de Resultado", f"{avg_perf}%")
-with col_c:
-    avg_var = round(tend["variacao_%"].mean(),2) if not tend.empty else 0
-    st.metric("⚖️ Média de Variação", f"{avg_var}%")
+# ─── 9. Prepara série temporal e média por escola ────────────────────────────
+school_ts = df.groupby(["escola","data"])["resultado"].mean().reset_index(name="média_result")
+first_last = school_ts.groupby("escola").agg(
+    primeiro=("média_result","first"),
+    ultimo  =("média_result","last"),
+    count   =("média_result","size")
+).reset_index()
+first_last = first_last[first_last["count"]>=2]
+first_last["variacao_%"] = ((first_last["ultimo"]-first_last["primeiro"]) / first_last["primeiro"] *100).round(2)
+c3.metric("⚖️ Média Variação", f"{round(first_last['variacao_%'].mean(),2)}%")
 
-# ─── 7. Top 10 Escolas ─────────────────────────────────────────────────────────
-st.subheader("🏆 Top 10 Escolas por Evolução Média")
-top10 = (
-    tend.groupby("escola")["variacao_%"]
-        .mean()
-        .sort_values(ascending=False)
-        .head(10)
-        .reset_index(name="média_variacao_%")
+# ─── 10. Top 10 Melhores (média ≥ 50%) ────────────────────────────────────────
+st.subheader("🏆 Top 10 Escolas de Bom Desempenho (média ≥ 50%)")
+avg_school = df.groupby("escola")["resultado"].mean().reset_index(name="média_result")
+best = avg_school[avg_school["média_result"]>=50].nlargest(10, "média_result")
+bar_best = alt.Chart(best).mark_bar().encode(
+    x="média_result:Q", y=alt.Y("escola:N", sort="-x")
 )
-# Altair bar chart com rótulos
-bar = (
-    alt.Chart(top10)
-    .mark_bar()
-    .encode(x=alt.X("média_variacao_%:Q", title="Variação Média (%)"),
-            y=alt.Y("escola:N", sort="-x", title="Escola"))
-)
-text = bar.mark_text(
-    align="left", dx=3
-).encode(text="média_variacao_%:Q")
-st.altair_chart(bar + text, use_container_width=True)
+text_best = bar_best.mark_text(align="left", dx=3).encode(text="média_result:Q")
+st.altair_chart(bar_best + text_best, use_container_width=True)
 
-# ─── 8. Heatmap Habilidade × Série ────────────────────────────────────────────
-st.subheader("🗺️ Heatmap: Média de Resultado por Habilidade e Série")
-pivot = df.pivot_table(
-    index="habilidade", columns="serie", values="resultado", aggfunc="mean"
-).reset_index().melt(id_vars="habilidade", var_name="serie", value_name="média_resultado")
-heat = (
-    alt.Chart(pivot)
-    .mark_rect()
-    .encode(
-        x=alt.X("serie:N", title="Série"),
-        y=alt.Y("habilidade:N", title="Habilidade"),
-        color=alt.Color("média_resultado:Q", scale=alt.Scale(scheme="lightmulti")),
-        tooltip=["habilidade","serie","média_resultado"]
-    )
+# ─── 11. Top 10 a Melhorar (média < 50%) ──────────────────────────────────────
+st.subheader("⚠️ Top 10 Escolas a Melhorar (média < 50%)")
+worst = avg_school[avg_school["média_result"]<50].nsmallest(10, "média_result")
+bar_worst = alt.Chart(worst).mark_bar(color="firebrick").encode(
+    x="média_result:Q", y=alt.Y("escola:N", sort="x")
 )
-st.altair_chart(heat, use_container_width=True)
+text_worst = bar_worst.mark_text(align="left", dx=3).encode(text="média_result:Q")
+st.altair_chart(bar_worst + text_worst, use_container_width=True)
 
-# ─── 9. Distribuição de Resultados ────────────────────────────────────────────
-st.subheader("📊 Distribuição de Resultados (%)")
-dist = df["resultado"].value_counts().sort_index().reset_index()
-dist.columns = ["resultado","contagem"]
-bar2 = (
-    alt.Chart(dist)
-    .mark_bar()
-    .encode(x=alt.X("resultado:O", title="Resultado (%)"),
-            y=alt.Y("contagem:Q", title="Frequência"))
+# ─── 12. Média por Construtor ────────────────────────────────────────────────
+st.subheader("🔧 Média por Construtor")
+avg_con = df.groupby("construtor")["resultado"].mean().reset_index(name="média_result")
+bar_con = alt.Chart(avg_con).mark_bar().encode(
+    x="média_result:Q", y=alt.Y("construtor:N", sort="-x")
 )
-text2 = bar2.mark_text(
-    dy=-5
-).encode(text="contagem:Q")
-st.altair_chart(bar2 + text2, use_container_width=True)
+text_con = bar_con.mark_text(align="left", dx=3).encode(text="média_result:Q")
+st.altair_chart(bar_con + text_con, use_container_width=True)
 
-# ─── 10. Benchmark Português vs Matemática ────────────────────────────────────
-st.subheader("🔍 Benchmark: Português vs Matemática")
-bench = (
-    df.groupby(["data","disciplina"])["resultado"]
-      .mean()
-      .reset_index()
-)
-line1 = (
-    alt.Chart(bench)
-    .mark_line(point=True)
-    .encode(x="data:T", y="resultado:Q", color="disciplina:N")
-)
-text3 = line1.mark_text(
-    align="center", dy=-10
-).encode(text="resultado:Q")
-st.altair_chart(line1 + text3, use_container_width=True)
-
-# ─── 11. Evolução Filtrada ────────────────────────────────────────────────────
-st.subheader("📈 Evolução por Filtros")
-col1, col2, col3 = st.columns(3)
-with col1:
-    sel_hab   = st.selectbox("Habilidade", sorted(df["habilidade"].unique()))
-with col2:
-    sel_esc   = st.selectbox("Escola",     sorted(df["escola"].unique()))
-with col3:
-    sel_serie = st.selectbox("Série",      sorted(df["serie"].unique()))
+# ─── 13. Evolução Detalhada ──────────────────────────────────────────────────
+st.subheader("📈 Evolução Detalhada por Filtros")
+fc1, fc2, fc3 = st.columns(3)
+f2_esc = fc1.selectbox("Escola",     sorted(df["escola"].unique()), key="evo_esc")
+f2_ser = fc2.selectbox("Série",      sorted(df["serie"].unique()), key="evo_ser")
+f2_con = fc3.selectbox("Construtor", sorted(df["construtor"].unique()), key="evo_con")
 
 filt = df[
-    (df["habilidade"]==sel_hab) &
-    (df["escola"]    ==sel_esc) &
-    (df["serie"]     ==sel_serie)
+    (df["escola"]    ==f2_esc)&
+    (df["serie"]     ==f2_ser)&
+    (df["construtor"]==f2_con)
 ]
-line2 = (
-    alt.Chart(filt)
-    .mark_line(point=True)
-    .encode(x="data:T", y="resultado:Q")
-)
-text4 = line2.mark_text(
-    align="center", dy=-10
-).encode(text="resultado:Q")
-st.altair_chart(line2 + text4, use_container_width=True)
+line = alt.Chart(filt).mark_line(point=True).encode(x="data:T", y="resultado:Q")
+text4 = line.mark_text(align="center", dy=-10).encode(text="resultado:Q")
+st.altair_chart(line + text4, use_container_width=True)
