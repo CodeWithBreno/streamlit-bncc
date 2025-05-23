@@ -36,26 +36,24 @@ def carregar_dados():
 
 # ─── Aba Dashboard ──────────────────────────────────────────────────────────
 with tab_main:
-    # Recarregar cache
     if st.button("🔄 Recarregar dados", key="reload_main"):
         st.cache_data.clear()
 
     df = carregar_dados()
     st.subheader("➕ Novo(s) registro(s) de resultado por Construtor")
-    # Formulário
     if "entries" not in st.session_state:
         st.session_state.entries = []
-    # Layout vertical exceto último par
+    # Campos um abaixo do outro, exceto construtor+resultado lado a lado
     escola = st.selectbox("Escola", load_list("escolas", "nome"))
     serie = st.selectbox("Série", [f"{i}º ano" for i in range(1,10)])
     disciplina = st.selectbox("Disciplina", ["Português", "Matemática"])
     data = st.date_input("Data", value=date.today())
-    # Construtor e Resultado lado a lado
     c1, c2 = st.columns([3,1])
     new_con = c1.selectbox("Construtor", load_list("construtores", "nome"), key="new_con_main")
     new_res = c2.slider("%", 0, 100, 75, key="new_res_main")
     if c2.button("➕", key="add_main"):
         st.session_state.entries.append({"construtor": new_con, "resultado": new_res})
+
     # Buffer
     if st.session_state.entries:
         st.markdown("**Buffer de lançamentos:**")
@@ -87,12 +85,11 @@ with tab_main:
         f_esc = st.sidebar.selectbox("Filtrar por Escola", ["Todas"] + load_list("escolas","nome"))
         min_d, max_d = df["data"].min().date(), df["data"].max().date()
         start_d = st.sidebar.date_input("Data Inicial", value=min_d, min_value=min_d, max_value=max_d)
-        end_d = st.sidebar.date_input("Data Final", value=max_d, min_value=min_d, max_value=max_d)
+        end_d   = st.sidebar.date_input("Data Final",   value=max_d, min_value=min_d, max_value=max_d)
         if start_d > end_d:
             st.sidebar.error("Data Inicial deve ser ≤ Data Final")
             st.stop()
-        filt = (df["data"]>=pd.to_datetime(start_d)) & (df["data"]<=pd.to_datetime(end_d))
-        df_f = df[filt]
+        df_f = df[(df["data"]>=pd.to_datetime(start_d)) & (df["data"]<=pd.to_datetime(end_d))]
         if f_esc != "Todas":
             df_f = df_f[df_f["escola"]==f_esc]
 
@@ -101,7 +98,11 @@ with tab_main:
         c1.metric("🔢 Total lançamentos", len(df_f))
         c2.metric("📈 Média Geral", f"{round(df_f['resultado'].mean(),2)}%")
         ts = df_f.groupby(["escola","data"])["resultado"].mean().reset_index(name="média_result")
-        fl = ts.groupby("escola").agg(primeiro=("média_result","first"), ultimo=("média_result","last"), count=("média_result","size")).reset_index()
+        fl = ts.groupby("escola").agg(
+            primeiro=("média_result","first"),
+            ultimo=("média_result","last"),
+            count=("média_result","size")
+        ).reset_index()
         fl = fl[fl['count']>=2]
         fl['variacao_%'] = ((fl['ultimo']-fl['primeiro'])/fl['primeiro']*100).round(2)
         c3.metric("⚖️ Média Variação", f"{round(fl['variacao_%'].mean(),2)}%")
@@ -110,14 +111,21 @@ with tab_main:
         st.subheader("🏆 Top 10 Bom Desempenho (média ≥ 50%)")
         avg_s = df_f.groupby('escola')['resultado'].mean().reset_index(name='média_result')
         best = avg_s[avg_s['média_result']>=50].nlargest(10,'média_result')
-        bar1 = alt.Chart(best).mark_bar().encode(x='média_result:Q', y=alt.Y('escola:N', sort='-x'))
-        st.altair_chart(bar1 + bar1.mark_text(align='left', dx=3).encode(text='média_result:Q'), use_container_width=True)
+        bar1 = alt.Chart(best).mark_bar().encode(
+            x='média_result:Q', y=alt.Y('escola:N', sort='-x')
+        )
+        st.altair_chart(bar1 + bar1.mark_text(align='left', dx=3).encode(text='média_result:Q'),
+                        use_container_width=True)
+
         st.subheader("⚠️ Top 10 a Melhorar (média < 50%)")
         worst = avg_s[avg_s['média_result']<50].nsmallest(10,'média_result')
-        bar2 = alt.Chart(worst).mark_bar(color='firebrick').encode(x='média_result:Q', y=alt.Y('escola:N', sort='x'))
-        st.altair_chart(bar2 + bar2.mark_text(align='left', dx=3).encode(text='média_result:Q'), use_container_width=True)
+        bar2 = alt.Chart(worst).mark_bar(color='firebrick').encode(
+            x='média_result:Q', y=alt.Y('escola:N', sort='x')
+        )
+        st.altair_chart(bar2 + bar2.mark_text(align='left', dx=3).encode(text='média_result:Q'),
+                        use_container_width=True)
 
-        # Gráfico Português x Matemática
+        # Português vs Matemática
         st.subheader("📈 Português vs Matemática")
         cmp = df_f.groupby(['data','disciplina'])['resultado'].mean().reset_index()
         chart = alt.Chart(cmp).mark_line(point=True).encode(
@@ -129,17 +137,19 @@ with tab_main:
 
         # Evolução detalhada por filtros
         st.subheader("📈 Evolução Detalhada")
-        fc1,fc2,fc3 = st.columns(3)
-        fe = fc1.selectbox("Escola", sorted(df_f['escola'].unique()))
-        fs = fc2.selectbox("Série", sorted(df_f['serie'].unique()))
-        fcon = fc3.selectbox("Construtor", sorted(df_f['construtor'].unique()))
+        fc1, fc2, fc3 = st.columns(3)
+        fe = fc1.selectbox("Escola", sorted(df_f['escola'].unique()), key='evo_esc')
+        series_opts = sorted(df_f[df_f['escola']==fe]['serie'].unique())
+        fs = fc2.selectbox("Série", series_opts, key='evo_ser')
+        con_opts = sorted(df_f[(df_f['escola']==fe)&(df_f['serie']==fs)]['construtor'].unique())
+        fcon = fc3.selectbox("Construtor", con_opts, key='evo_con')
         sel = df_f[(df_f['escola']==fe)&(df_f['serie']==fs)&(df_f['construtor']==fcon)]
         line = alt.Chart(sel).mark_line(point=True).encode(
-            x=alt.X('data:T',title='Data'),
-            y=alt.Y('resultado:Q',title='Resultado (%)')
+            x=alt.X('data:T', title='Data'),
+            y=alt.Y('resultado:Q', title='Resultado (%)')
         )
         txt = line.mark_text(align='center', dy=-10).encode(text='resultado:Q')
-        st.altair_chart(line+txt, use_container_width=True)
+        st.altair_chart(line + txt, use_container_width=True)
 
 # ─── Aba Cadastro ────────────────────────────────────────────────────────────
 with tab_cadastro:
@@ -148,32 +158,32 @@ with tab_cadastro:
 
     with subt[0]:
         esc = load_list("escolas","nome")
-        st.dataframe(pd.DataFrame({"nome":esc}))
+        st.dataframe(pd.DataFrame({"nome": esc}))
         new_esc = st.text_input("Nova Escola", key="inp_esc")
         if st.button("➕ Adicionar Escola", key="add_esc") and new_esc:
             supabase.table("escolas").insert({"nome": new_esc}).execute()
             st.success("Escola adicionada.")
             st.cache_data.clear()
-        for i,nome in enumerate(esc):
-            c1,c2 = st.columns([8,1])
+        for i, nome in enumerate(esc):
+            c1, c2 = st.columns([8,1])
             c1.write(nome)
             if c2.button("❌", key=f"del_esc_{i}"):
-                supabase.table("escolas").delete().eq("nome",nome).execute()
+                supabase.table("escolas").delete().eq("nome", nome).execute()
                 st.success("Escola removida.")
                 st.cache_data.clear()
 
     with subt[1]:
         cons = load_list("construtores","nome")
-        st.dataframe(pd.DataFrame({"nome":cons}))
+        st.dataframe(pd.DataFrame({"nome": cons}))
         new_con2 = st.text_input("Novo Construtor", key="inp_con")
         if st.button("➕ Adicionar Construtor", key="add_con") and new_con2:
             supabase.table("construtores").insert({"nome": new_con2}).execute()
             st.success("Construtor adicionado.")
             st.cache_data.clear()
-        for i,nome in enumerate(cons):
-            c1,c2 = st.columns([8,1])
+        for i, nome in enumerate(cons):
+            c1, c2 = st.columns([8,1])
             c1.write(nome)
             if c2.button("❌", key=f"del_con_{i}"):
-                supabase.table("construtores").delete().eq("nome",nome).execute()
+                supabase.table("construtores").delete().eq("nome", nome).execute()
                 st.success("Construtor removido.")
                 st.cache_data.clear()
