@@ -77,8 +77,10 @@ with tab_main:
             st.session_state.entries = []
             st.cache_data.clear()
 
-    if df.dropna(how="all", subset=["escola","construtor","resultado"]).empty:
-        st.info("Nenhum dado cadastrado ainda.")
+    # Substituição para evitar KeyError quando não há dados
+    required = ["escola", "construtor", "resultado"]
+    if not all(col in df.columns for col in required) or df[required].dropna(how="all").empty:
+        st.info("🔍 Nenhum dado cadastrado ainda. Use o formulário acima para inserir resultados.")
     else:
         # Filtros
         st.sidebar.subheader("🔎 Filtros")
@@ -91,7 +93,7 @@ with tab_main:
             st.stop()
         df_f = df[(df["data"]>=pd.to_datetime(start_d)) & (df["data"]<=pd.to_datetime(end_d))]
         if f_esc != "Todas":
-            df_f = df_f[df_f["escola"]==f_esc]
+            df_f = df_f[df_f["escola"] == f_esc]
 
         # KPIs
         c1, c2, c3 = st.columns(3)
